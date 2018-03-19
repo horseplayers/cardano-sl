@@ -37,7 +37,10 @@ import           Pos.Util.JsonLog
 import           Pos.Util.TimeWarp (CanJsonLog (..))
 import           Pos.WorkMode
 
-import           Cardano.Wallet.Kernel (PassiveWallet)
+import           Cardano.Wallet.Kernel (PassiveWallet, applyBlocks)
+import           Cardano.Wallet.Kernel.Types (ResolvedBlock, mkResolvedBlock)
+import qualified Data.List.NonEmpty as NE
+import           Data.Maybe (fromJust)
 
 {-------------------------------------------------------------------------------
   The wallet context and monad
@@ -67,16 +70,19 @@ getWallet = view wcWallet_L
 --
 -- TODO: This should wrap the functionality in "Cardano.Wallet.Core" to
 -- wrap things in Cardano specific types.
-walletApplyBlocks :: PassiveWallet
+walletApplyBlocks :: HasConfiguration
+                  => PassiveWallet
                   -> OldestFirst NE Blund
                   -> WalletMode SomeBatchOp
 walletApplyBlocks _w _bs = do
     -- TODO: Call into the wallet. This should be an asynchronous operation
     -- because 'onApplyBlocks' gets called with the block lock held.
-    logError "walletApplyBlocks not implemented"
 
-    -- We don't make any changes to the DB so we always return 'mempty'.
-    return mempty
+    let resolvedBlocks = map blundToResolvedBlock _bs
+
+    liftIO $ applyBlocks _w resolvedBlocks
+
+    return mempty -- We don't make any changes to the DB so we always return 'mempty'
 
 -- | Callback for rollbacks
 --
@@ -93,7 +99,11 @@ walletRollbackBlocks _w _bs = do
     -- We don't make any changes to the DB so we always return 'mempty'.
     return mempty
 
-instance MonadBListener WalletMode where
+blundToResolvedBlock :: Blund -> ResolvedBlock
+blundToResolvedBlock (b,u) = mkResolvedBlock b spentOutputs'
+    where spentOutputs' = map (map fromJust . NE.toList) $ undoTx u
+
+instance HasConfiguration => MonadBListener WalletMode where
   onApplyBlocks    bs = getWallet >>= (`walletApplyBlocks`    bs)
   onRollbackBlocks bs = getWallet >>= (`walletRollbackBlocks` bs)
 

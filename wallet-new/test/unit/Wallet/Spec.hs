@@ -2,8 +2,12 @@
 
 -- | Pure specification of the wallet
 module Wallet.Spec (
-    Wallet -- TODO: Not sure if we want to keep this opaque or not
+    Wallet(..) -- TODO: Not sure if we want to keep this opaque or not
+  , State(..)
   , walletEmpty
+  , initWallet
+  , getWalletUtxo
+  , applyBlock
   ) where
 
 import           Universum hiding (State)
@@ -45,6 +49,17 @@ walletEmpty _walletOurs = Wallet {..}
         _stateUtxo    = utxoEmpty
       , _statePending = Set.empty
       }
+
+initWallet :: Ours a -> Utxo h a -> Wallet h a
+initWallet _walletOurs utxo' = Wallet {..}
+  where
+    _walletState = State {
+        _stateUtxo    = utxo'
+      , _statePending = Set.empty
+      }
+
+getWalletUtxo :: Wallet h a -> Utxo h a
+getWalletUtxo w = w ^. walletState ^. stateUtxo
 
 {-------------------------------------------------------------------------------
   IsWallet instance

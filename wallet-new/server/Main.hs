@@ -9,6 +9,7 @@ module Main where
 import           Universum
 
 import           Data.Maybe (fromJust)
+import qualified Data.Map as Map
 import           Mockable (Production (..), runProduction)
 import qualified Pos.Client.CLI as CLI
 import           Pos.Communication (ActionSpec (..))
@@ -100,7 +101,10 @@ actionWithNewWallet sscParams nodeParams params =
         initNodeDBs $ \nr -> do
       -- TODO: Will probably want to extract some parameters from the
       -- 'NewWalletBackendParams' to construct or initialize the wallet
-      Kernel.bracketPassiveWallet logMessage' $ \wallet ->
+
+      let esk = undefined -- TODO Pass in Wallet's EncryptedSecretKey
+      let utxo = Map.empty
+      Kernel.bracketPassiveWallet logMessage' esk utxo $ \wallet ->
         Kernel.Mode.runWalletMode nr wallet (mainAction wallet nr)
   where
     mainAction w = runNodeWithInit w $
