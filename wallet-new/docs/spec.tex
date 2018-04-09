@@ -2109,7 +2109,13 @@ well as the actual UTxO.
 \section{Tracking Metadata}
 
 The wallet may wish to track some additional information about transactions and
-blocks. From the point of the abstract wallet specification we are primarily
+blocks. In this section we first study how we can model this abstractly, and
+then how we can instantiate that abstract model to record the data that we
+are interested in in the actual implementation.
+
+\subsection{Abstract model}
+
+From the point of the abstract wallet specification we are primarily
 interested in modelling how this relates to rollback. The basic model is shown
 in Figure~\ref{fig:tracking_metadata}. The specification is parameterized
 by the type of metadata:
@@ -2171,25 +2177,69 @@ function needs to ensure to add this information also to the prefiltered block.
 \subsection{Transaction history}
 \label{sec:transaction_history}
 
-In this section we discuss how the abstract metadata model can be instantiated
-to encode the information required in order to be able to report transaction
-history as provided by the current `V1' wallet REST API.
+This section is a bit more technique in nature and studies how the transaction
+metadata reported in the current wallet `V1 REST API' can be defined in terms
+of the abstract model from Figure~\ref{fig:tracking_metadata}.
+
+The transaction metadata reported in the REST API divides into three categories:
+information that we can model as part of $\mathsf{TxMeta}$, information that
+we can model as part of $\mathsf{BlockMeta}$, and information that is derived
+from the state of the wallet proper.
+
+\subsubsection{Static information}
+
+The static information ($\mathsf{TxMeta}$) is the most straight-forward.
+This includes
 
 \begin{itemize}
-\item Most information returned is entirely static, and can be covered by
-a suitable choice for $\mathsf{TxMeta}$. This includes the transaction ID,
-the total amount, the inputs and outputs (both in terms of addresses),
-whether the transaction is ``local'' or not (meaning it is from and to
-addresses owned by the wallet), the transaction direction (incoming or
-outgoing), and the transaction creation time.
-\item The depth of the transaction in the blockchain can be recorded
-(somewhat implicitly) by choosing
+\item transaction ID
+\item total amount
+\item inputs and outputs (both in terms of addresses)
+\item whether the transaction is ``local'' or not (meaning it is from and to
+addresses owned by the wallet)
+\item the transaction direction (incoming or outgoing)
+\item the transaction creation time
+\end{itemize}
+
+\subsubsection{Information dependent on chain status}
+\label{sec:confirmations}
+
+The V1 API also records how deep the transaction lives in the blockchain
+(counting from the tip); somewhat confusingly, it refers to this as the number
+of ``confirmations''. We can model this somewhat indirectly by choosing
+
 \begin{equation*}
 \mathsf{BlockMeta} = \mathsf{TxId} \mapsto \mathsf{BlockNumber}
 \end{equation*}
-The depth can then be computed provided the wallet knows the length of the
-current chain.
-\item The transaction's status can be reported as follows:
+
+This tells use which block each transaction got confirmed in; the depth
+can then be derived once we know the block number of the current tip.
+
+\subsubsection{Transaction status}
+\label{sec:transaction_status}
+
+The API reports transaction status as one of\footnote{The current wallet
+supports an additional status $\texttt{Creating}$, but we will not include this
+in the reimplementation.}
+%
+\begin{description}
+\item[\texttt{Applying}] In terms of our model, this means that the transaction
+is in the pending set.
+\item[\texttt{InNewestBlocks}] The transaction has been included in the blockchain,
+but may still be rolled back.
+\item[\texttt{Persisted}] The transaction has been included in the blockchain,
+and can no longer be rolled back.\footnote{The current wallet may in fact be
+optimistic here and report a transaction as \texttt{Persisted} even before $k$
+slots have passed.}
+\item[\texttt{WontApply}] The wallet has given up on trying to get a pending
+transaction into the blockchain; perhaps because the transaction has been
+invalidated, or perhaps simply because some time limit has expired.
+\end{description}
+%
+For incoming transactions, only $\mathtt{InNewestBlocks}$ and
+$\mathtt{Persisted}$ are applicable. We can derive transaction status from
+the block metadata as described in Section~\ref{sec:confirmations} and
+the wallet's state as follows:
 %
 \begin{equation*}
 \begin{cases}
@@ -2204,14 +2254,12 @@ current chain.
 \end{cases} & \textit{otherwise}
 \end{cases}
 \end{equation*}
-The \texttt{Creating} status can be seen as a phase before the transaction
-enters the wallet, and is mostly inpdendent from it.
-\end{itemize}
 
 The diagram in Figure~\ref{fig:transaction_state} shows how the status of
 transactions can change over dynamically; the left diagram shows outgoing
-transactions, the right shows incoming transactions. The empty circle means that
-the transaction is not included in the wallet's reported history.
+transactions, the right shows incoming transactions. The empty circle at the top
+of the diagram means that the transaction is not included in the wallet's
+reported history.
 
 \begin{figure}
 \begin{tikzpicture}[->,>=stealth',shorten >=1pt,auto,node distance=2cm,
@@ -2259,46 +2307,53 @@ the transaction is not included in the wallet's reported history.
 \caption{\label{fig:transaction_state}Transaction state transitions (outgoing, \emph{left}, and incoming, \emph{right})}
 \end{figure}
 
-\subsection{Transaction resubmission and cancellation}
+\section{Transaction resubmission and cancellation}
 
-In an actual wallet implementation, $\mathsf{newPending}$ would of course have to
-broadcast the transaction over the network, so that a next slot leader can
-include the transaction into the blockchain. The wallet may wish to monitor this,
-resubmit the transaction again if it hasn't been included after a while, and
-eventually give up. This state is external to, and can be entirely independent
-from, the rest of the wallet state. The only interaction with the wallet
-proper is that at some point the network layer may decide to give up on
-a transaction, removing it from the $\mathit{pending}$ set even though it has
-not been included in the blockchain yet. From the point of view of the model
+An actual implementation of the wallet needs to broadcast pending transactions
+to the network, monitor when they get included in the blockchain, re-submit them
+if they don't get included, and perhaps eventually decide to give up on them if
+for some reason they do not get included.
+
+The (re)submission layer can use a (priority) queue that for each time slot
+records which transactions may need to be resubmitted. Each time a transaction
+gets submitted in slot $n$, a resubmission gets scheduled for slot $n + l$ for
+some constant $l$. When slot $n + l$ comes, the resubmission logic checks if the
+transaction is still in the wallet's pending set, and if so, repeat the process.
+This resubmission state can be kept separate from the core wallet state (meaning
+that there is no need for some kind of consistency between the two states).
+
+After a rollback the resubmission layer needs to figure out which transactions
+have become pending again, and start the resubmission process afresh. This
+could possibly be faciliated by a callback from the core wallet layer.
+
+When the resubmission layer wants to give up on a transaction, it should
+remove it from $\mathit{pending}$. From the point of view of the model
 this corresponds to a new function
-
+%
 \begin{align*}
 & \mathsf{cancel} :: \mathsf{Tx} \rightarrow \mathsf{Wallet} \rightarrow \mathsf{Wallet} \\
 & \mathsf{cancel} ~ tx ~ (\mathit{checkpoints}, \mathit{txInfo}) = (\mathsf{map} ~ \mathsf{cancel'} ~ \mathit{checkpoints}, \mathit{txInfo}) \\
 & \qquad \text{where} ~ \mathsf{cancel}' ~ (\mathit{utxo}, \mathit{pending}, \mathit{blockMeta}) = (\mathit{utxo}, \mathit{pending} \setminus \{ \mathit{tx} \}, \mathit{blockMeta})
 \end{align*}
-
-We remove it from all checkpoints since it would be strange if a transaction
-cancelled would be reintroduced after a rollback. Conversely, the user may
-wish to prompt the wallet to try again even after the wallet gave up. From
-the point of view of the wallet, however, this is simply a call to
-$\mathsf{newPending}$.
-
-By the logic of Section~\ref{sec:transaction_history}
-(Figure~\ref{fig:transaction_state}), a cancelled transaction will be reported
-as $\texttt{WontApply}$. Effectively, $\mathsf{cancel}$ becomes a secondary way
-in which a transaction may go from $\texttt{Applying}$ to $\texttt{WontApply}$
-(arrow $\mathsf{applyBlock}^*$), and $\mathsf{newPending}$ a secondary
-way to get back from $\texttt{WontApply}$ to $\texttt{Applying}$ (arrow
-$\mathsf{rollback}^*$).
+%
+Note that the logic of Section~\ref{sec:transaction_status} means that such
+a transaction would then be reported as $\mathtt{WontApply}$. Since we
+removed the transaction from the $\mathit{pending}$ set in all checkpoints
+however a rollback won't reintroduce it into $\mathit{pending}$; if the user
+wants to explicitly tell the wallet to try this transaction again they will
+need to call $\mathsf{newPending}$. Effectively, $\mathsf{cancel}$ becomes a
+secondary way in which a transaction may go from $\texttt{Applying}$ to
+$\texttt{WontApply}$ (arrow $\mathsf{applyBlock}^*$), and $\mathsf{newPending}$
+a secondary way to get back from $\texttt{WontApply}$ to $\texttt{Applying}$
+(arrow $\mathsf{rollback}^*$).
 
 \paragraph{Note.} Of course, once a transaction has been broadcast, cancelling
 it locally does not mean the transaction won't be included anymore. This can
-only be fixed by introducing a TTL.
+only be fixed by introducing a TTL. \\
 
-\todo[inline]{Should we be more precise about resubmission at this level of
-detail? Things like exponential back-off, cut-off point (1hr?) before
-cancelling, etc.}
+Since resubmission is time sensitive, there is not much point persisting it.
+When the wallet is restarted, resubmission state can be re-initialized from
+the core wallet's reported $\mathit{pending}$ set.
 
 \section{TODO: Transaction input selection and UTxO maintenance}
 
