@@ -103,12 +103,11 @@ actionWithNewWallet sscParams nodeParams params =
       -- 'NewWalletBackendParams' to construct or initialize the wallet
 
       let esk = undefined -- TODO Pass in Wallet's EncryptedSecretKey
-      let utxo = Map.empty
-      Kernel.bracketPassiveWallet logMessage' esk utxo $ \wallet ->
+      Kernel.bracketPassiveWallet logMessage' esk $ \wallet ->
         Kernel.Mode.runWalletMode nr wallet (mainAction wallet nr)
   where
     mainAction w = runNodeWithInit w $
-        liftIO $ Kernel.init w
+        liftIO $ Kernel.init w Map.empty
 
     runNodeWithInit w init nr =
         let (ActionSpec f, outs) = runNode nr (plugins w)

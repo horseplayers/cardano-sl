@@ -20,6 +20,9 @@ module Wallet.Abstract (
     -- ** Invariants
   , Invariant
   , invariant
+  , InvariantViolation(..)
+  , InvariantViolationEvidence
+  , InvalidInput(..)
     -- ** Testing
   , walletInvariants
   , walletEquivalent
@@ -28,6 +31,7 @@ module Wallet.Abstract (
   , InductiveWithOurs(..)
   , genFromBlockchain
   , genFromBlockchainPickingAccounts
+  , genFromBlockchainWithOurs
     -- * Auxiliary operations
   , balance
   , txIns
@@ -607,6 +611,27 @@ genFromBlockchainPickingAccounts i fpc = do
         else pure ()
 
     InductiveWithOurs addrs <$> genFromBlockchain addrs fpc
+
+-- | Selects addresses from the given blockchain using a predicate function
+-- to select addresses belonging to an actor.
+genFromBlockchainWithOurs
+    :: Hash h Addr
+    => (Addr -> Bool)
+    -> FromPreChain h ()
+    -> Gen (InductiveWithOurs h Addr)
+genFromBlockchainWithOurs isOurs fpc = do
+    let allAddrs = toList (ledgerAddresses (fpcLedger fpc))
+        ourAddrs = Set.fromList $ filter isOurs allAddrs
+
+    if null ourAddrs then
+        error
+        $ sformat
+            ( "None of the addresses are ours!\n\n"
+            % "All addresses: " % build
+            ) (intercalate ", " (map show allAddrs))
+        else pure ()
+
+    InductiveWithOurs ourAddrs <$> genFromBlockchain ourAddrs fpc
 
 genInductiveFor :: Hash h Addr => Set Addr -> InductiveGen h (Inductive h Addr)
 genInductiveFor addrs = do
